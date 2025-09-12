@@ -12,9 +12,9 @@ class PatentDocumentLoader:
         self.documents_path = Path(documents_path)
         self.output_dir = "./output"
         os.makedirs(self.output_dir, exist_ok=True)
-        self.configure_models()
+        self.configureModels()
     
-    def configure_models(self):
+    def configureModels(self):
         home_dir = Path.home()
         config_file = home_dir / "mineru.json"
         
@@ -32,14 +32,14 @@ class PatentDocumentLoader:
             json.dump(config, f, ensure_ascii=False, indent=4)
         
         os.environ["MINERU_MODEL_SOURCE"] = "local"
-        os.environ["MINERU_VIRTUAL_VRAM_SIZE"] = "4"
+        os.environ["MINERU_MIN_BATCH_INFERENCE_SIZE"] = "768"
     
     def load_documents(self) -> List[dict]:
         documents = []
             
         for file_path in self.documents_path.glob("*.pdf"):
             try:
-                document = self.load_document(file_path)
+                document = self.loadDocument(file_path)
                 if document and "content" in document and document["content"] and not document["content"].startswith("ERROR:"):
                     documents.append(document)
                 else:
@@ -51,10 +51,10 @@ class PatentDocumentLoader:
                 logger.warning(f"Exception while processing document {file_path.name}: {e}")
         return documents
         
-    def load_document(self, file_path: Path) -> dict:
+    def loadDocument(self, file_path: Path) -> dict:
         try:
             try:
-                text = self.extract_text(file_path)
+                text = self.extractText(file_path)
                 if text and len(text.strip()) > 0:
                     logger.info(f"Successfully processed {file_path.name} with MinerU")
                     return {
@@ -88,7 +88,7 @@ class PatentDocumentLoader:
                 "content": error_msg
             }
     
-    def extract_text(self, file_path: Path) -> str:
+    def extractText(self, file_path: Path) -> str:
         try:
             from mineru.cli.common import do_parse, read_fn
             from mineru.utils.enum_class import MakeMode
