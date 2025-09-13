@@ -78,6 +78,12 @@ Include technical field, background, invention content, technical effects, and k
             return result["detailed_summary"]
         except Exception as e:
             return f"Error generating detailed summary: {str(e)}"
+    
+    def generate_detailed_summary(self, text: str) -> str:
+        """
+        Pythonic naming convention version of generateDetailedSummary
+        """
+        return self.generateDetailedSummary(text)
             
     def translateToChinese(self, text: str) -> str:
         if not SGLANG_AVAILABLE:
