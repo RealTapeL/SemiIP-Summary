@@ -79,9 +79,22 @@ def clean_text_for_markdown(text):
     return text
 
 def clean_text_for_pdf(text):
+    # 移除或替换可能导致PDF生成错误的字符
     text = text.replace('<br/>', '\n')
     text = text.replace('<br>', '\n')
     text = text.replace('</br>', '')
+    text = text.replace('<para>', '')
+    text = text.replace('</para>', '')
+    # 移除多余的换行符
+    lines = text.split('\n')
+    cleaned_lines = [line for line in lines if line.strip()]
+    return '\n'.join(cleaned_lines)
+
+def escape_html(text):
+    """转义HTML特殊字符"""
+    text = text.replace('&', '&amp;')
+    text = text.replace('<', '&lt;')
+    text = text.replace('>', '&gt;')
     return text
 
 def save_summary_as_md(document, english_summary, chinese_summary, filepath):
@@ -128,14 +141,14 @@ def save_summary_as_pdf(document, english_summary, chinese_summary, filepath):
         alignment=TA_LEFT
     )
     
-    clean_doc_name = document['name'].replace('<', '&lt;').replace('>', '&gt;')
+    clean_doc_name = escape_html(document['name'])
     title = Paragraph(f"{clean_doc_name} Summary", title_style)
     story.append(title)
     
     doc_info = Paragraph(f"<b>Document</b>: {clean_doc_name}", normal_style)
     story.append(doc_info)
     
-    clean_path = document['path'].replace('<', '&lt;').replace('>', '&gt;')
+    clean_path = escape_html(document['path'])
     path_info = Paragraph(f"<b>Original Path</b>: {clean_path}", normal_style)
     story.append(path_info)
     story.append(Spacer(1, 0.2*inch))
