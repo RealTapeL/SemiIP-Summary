@@ -2,6 +2,14 @@ import os
 import sys
 import logging
 from datetime import datetime
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+from reportlab.lib.enums import TA_LEFT
 from src.config.model_config import MODEL_PATH
 from src.config.app_config import DOCUMENTS_PATH, SUMMARIES_PATH
 from src.documents.loader import PatentDocumentLoader
@@ -54,94 +62,100 @@ def is_pdf_extraction_completed(documents_path, output_path):
     logger.info(f"PDF文件总数: {pdf_count}, 已提取文件数: {extracted_count}")
     return pdf_count > 0 and pdf_count == extracted_count
 
+def clean_text_for_markdown(text):
+    text = text.replace('*', '\\*')
+    text = text.replace('_', '\\_')
+    text = text.replace('#', '\\#')
+    text = text.replace('`', '\\`')
+    text = text.replace('[', '\\[')
+    text = text.replace(']', '\\]')
+    text = text.replace('(', '\\(')
+    text = text.replace(')', '\\)')
+    text = text.replace('!', '\\!')
+    text = text.replace('|', '\\|')
+    text = text.replace('~', '\\~')
+    text = text.replace('<', '&lt;')
+    text = text.replace('>', '&gt;')
+    return text
+
+def clean_text_for_pdf(text):
+    text = text.replace('<br/>', '\n')
+    text = text.replace('<br>', '\n')
+    text = text.replace('</br>', '')
+    return text
+
 def save_summary_as_md(document, english_summary, chinese_summary, filepath):
     with open(filepath, "w", encoding="utf-8") as f:
-        f.write(f"# {document['name']} Summary\n\n")
-        f.write(f"**Document**: {document['name']}\n\n")
-        f.write(f"**Original Path**: {document['path']}\n\n")
+        clean_doc_name = clean_text_for_markdown(document['name'])
+        f.write(f"# {clean_doc_name} Summary\n\n")
+        f.write(f"**Document**: {clean_doc_name}\n\n")
+        f.write(f"**Original Path**: {clean_text_for_markdown(document['path'])}\n\n")
         
         f.write("## English Summary\n\n")
-        f.write(english_summary)
+        f.write(clean_text_for_markdown(english_summary))
         f.write("\n\n")
         
         f.write("## Chinese Summary\n\n")
-        f.write(chinese_summary)
+        f.write(clean_text_for_markdown(chinese_summary))
         f.write("\n")
 
 def save_summary_as_pdf(document, english_summary, chinese_summary, filepath):
-    try:
-        from reportlab.pdfgen import canvas
-        from reportlab.lib.pagesizes import letter
-        from reportlab.pdfbase import pdfmetrics
-        from reportlab.pdfbase.ttfonts import TTFont
-        from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
-        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-        from reportlab.lib.units import inch
-        from reportlab.lib.enums import TA_LEFT
-        
-        doc = SimpleDocTemplate(filepath, pagesize=letter)
-        styles = getSampleStyleSheet()
-        story = []
-        
-        title_style = ParagraphStyle(
-            'CustomTitle',
-            parent=styles['Heading1'],
-            fontSize=16,
-            spaceAfter=30,
-            alignment=TA_LEFT
-        )
-        
-        heading_style = ParagraphStyle(
-            'CustomHeading',
-            parent=styles['Heading2'],
-            fontSize=14,
-            spaceAfter=12,
-            alignment=TA_LEFT
-        )
-        
-        normal_style = ParagraphStyle(
-            'CustomNormal',
-            parent=styles['Normal'],
-            fontSize=10,
-            spaceAfter=6,
-            alignment=TA_LEFT
-        )
-        
-        title = Paragraph(f"{document['name']} Summary", title_style)
-        story.append(title)
-        
-        doc_info = Paragraph(f"<b>Document</b>: {document['name']}", normal_style)
-        story.append(doc_info)
-        
-        path_info = Paragraph(f"<b>Original Path</b>: {document['path']}", normal_style)
-        story.append(path_info)
-        story.append(Spacer(1, 0.2*inch))
-        
-        eng_title = Paragraph("English Summary", heading_style)
-        story.append(eng_title)
-        
-        eng_summary = Paragraph(english_summary.replace('\n', '<br/>'), normal_style)
-        story.append(eng_summary)
-        story.append(Spacer(1, 0.2*inch))
-        
-        chn_title = Paragraph("Chinese Summary", heading_style)
-        story.append(chn_title)
-        
-        chn_summary = Paragraph(chinese_summary.replace('\n', '<br/>'), normal_style)
-        story.append(chn_summary)
-        
-        doc.build(story)
-    except ImportError:
-        logger.warning("ReportLab library not installed, cannot generate PDF files")
-        with open(filepath.replace('.pdf', '_no_pdf_support.txt'), "w", encoding="utf-8") as f:
-            f.write("PDF generation requires the ReportLab library.\n")
-            f.write("Please run: pip install reportlab\n\n")
-            f.write(f"Document: {document['name']}\n")
-            f.write(f"Original Path: {document['path']}\n")
-            f.write("\n--- English Summary ---\n")
-            f.write(english_summary)
-            f.write("\n\n--- Chinese Summary ---\n")
-            f.write(chinese_summary)
+    doc = SimpleDocTemplate(filepath, pagesize=letter)
+    styles = getSampleStyleSheet()
+    story = []
+    
+    title_style = ParagraphStyle(
+        'CustomTitle',
+        parent=styles['Heading1'],
+        fontSize=16,
+        spaceAfter=30,
+        alignment=TA_LEFT
+    )
+    
+    heading_style = ParagraphStyle(
+        'CustomHeading',
+        parent=styles['Heading2'],
+        fontSize=14,
+        spaceAfter=12,
+        alignment=TA_LEFT
+    )
+    
+    normal_style = ParagraphStyle(
+        'CustomNormal',
+        parent=styles['Normal'],
+        fontSize=10,
+        spaceAfter=6,
+        alignment=TA_LEFT
+    )
+    
+    clean_doc_name = document['name'].replace('<', '&lt;').replace('>', '&gt;')
+    title = Paragraph(f"{clean_doc_name} Summary", title_style)
+    story.append(title)
+    
+    doc_info = Paragraph(f"<b>Document</b>: {clean_doc_name}", normal_style)
+    story.append(doc_info)
+    
+    clean_path = document['path'].replace('<', '&lt;').replace('>', '&gt;')
+    path_info = Paragraph(f"<b>Original Path</b>: {clean_path}", normal_style)
+    story.append(path_info)
+    story.append(Spacer(1, 0.2*inch))
+    
+    eng_title = Paragraph("English Summary", heading_style)
+    story.append(eng_title)
+    
+    clean_eng_summary = clean_text_for_pdf(english_summary)
+    eng_summary = Paragraph(clean_eng_summary.replace('\n', '<br/>'), normal_style)
+    story.append(eng_summary)
+    story.append(Spacer(1, 0.2*inch))
+    
+    chn_title = Paragraph("Chinese Summary", heading_style)
+    story.append(chn_title)
+    
+    clean_chn_summary = clean_text_for_pdf(chinese_summary)
+    chn_summary = Paragraph(clean_chn_summary.replace('\n', '<br/>'), normal_style)
+    story.append(chn_summary)
+    
+    doc.build(story)
 
 def main():
     try:
@@ -230,13 +244,11 @@ def main():
                 
                 clean_name = "".join(c for c in document['name'] if c.isalnum() or c in (' ','.','_','-')).rstrip()
                 
-                # Save as Markdown format
                 md_filename = os.path.splitext(clean_name)[0] + "_summary.md"
                 md_filepath = os.path.join(SUMMARIES_PATH, md_filename)
                 save_summary_as_md(document, english_summary, chinese_summary, md_filepath)
                 logger.info(f"Markdown summary saved to: {md_filepath}")
                 
-                # Save as PDF format
                 pdf_filename = os.path.splitext(clean_name)[0] + "_summary.pdf"
                 pdf_filepath = os.path.join(SUMMARIES_PATH, pdf_filename)
                 save_summary_as_pdf(document, english_summary, chinese_summary, pdf_filepath)
