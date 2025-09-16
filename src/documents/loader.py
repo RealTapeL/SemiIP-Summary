@@ -18,7 +18,7 @@ class PatentDocumentLoader:
         home_dir = Path.home()
         config_file = home_dir / "mineru.json"
         
-        local_models_path = "/media/ps/4be23142-02e1-4581-90e2-3316bdb6f49c/SemiIP-Summary/PDF-Extract-Kit-1.0"
+        local_models_path = "/media/ps/4be23142-02e1-4581-90e2-3316bdb6f49c1/SemiIP-Summary/PDF-Extract-Kit-1.0"
         
         config = {
             "models-dir": {
