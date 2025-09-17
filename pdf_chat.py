@@ -7,6 +7,8 @@ from datetime import datetime
 import shutil
 
 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
+# 添加 RAG-Anything 到路径
+sys.path.append(os.path.join(os.path.dirname(__file__), 'RAG-Anything'))
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -25,6 +27,13 @@ model_path = st.sidebar.text_input(
     "模型路径",
     value="/home/ps/Qwen3-4B",
     help="本地模型的路径"
+)
+
+# 添加 mineru 模型路径设置
+mineru_model_path = st.sidebar.text_input(
+    "MinerU模型路径",
+    value="/media/ps/4be23142-02e1-4581-90e2-3316bdb6f49c1/SemiIP-Summary/PDF-Extract-Kit-1.0",
+    help="MinerU模型的本地路径"
 )
 
 use_document_context = st.sidebar.checkbox("使用文档内容作为上下文", value=True, help="取消勾选以进行通用对话")
@@ -57,8 +66,8 @@ if "messages" not in st.session_state:
 if "processed_pdf" not in st.session_state:
     st.session_state.processed_pdf = None
     
-if "retriever" not in st.session_state:
-    st.session_state.retriever = None
+if "rag_instance" not in st.session_state:
+    st.session_state.rag_instance = None
     
 if "model_loaded" not in st.session_state:
     st.session_state.model_loaded = False
@@ -76,55 +85,101 @@ if uploaded_file is not None and st.session_state.processed_pdf is None:
             with open(temp_file_path, "wb") as f:
                 f.write(uploaded_file.getbuffer())
             
-            from src.documents.loader import PatentDocumentLoader
+            # 使用 RAG-Anything 处理 PDF
+            from raganything import RAGAnything, RAGAnythingConfig
+            from lightrag.utils import EmbeddingFunc
+            import torch
+            from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel
+            import asyncio
             
-            temp_process_dir = os.path.join(temp_dir, "process")
-            os.makedirs(temp_process_dir, exist_ok=True)
+            # 配置 RAG-Anything，设置 mineru 模型路径
+            config = RAGAnythingConfig(
+                working_dir="./rag_storage",
+                parser="mineru",
+                parse_method="auto",
+                enable_image_processing=True,
+                enable_table_processing=True,
+                enable_equation_processing=True,
+            )
             
-            import shutil
-            shutil.copy(temp_file_path, temp_process_dir)
+            # 设置环境变量以使用本地 mineru 模型
+            os.environ['MINERU_MODEL_PATH'] = mineru_model_path
+            os.environ['MINERU_MODEL_SOURCE'] = 'local'
             
-            document_loader = PatentDocumentLoader(temp_process_dir)
-            documents = document_loader.load_documents()
+            # 初始化模型和 tokenizer
+            tokenizer = AutoTokenizer.from_pretrained(model_path)
             
-            document_content = None
-            for doc in documents:
-                if doc['name'] == uploaded_file.name:
-                    document_content = doc['content']
-                    break
+            def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwargs):
+                # 使用本地模型进行推理
+                if not st.session_state.model_loaded:
+                    model = AutoModelForCausalLM.from_pretrained(
+                        model_path,
+                        low_cpu_mem_usage=True,
+                        device_map="auto",
+                        torch_dtype=torch.float16
+                    )
+                    st.session_state.model = model
+                    st.session_state.model_loaded = True
+                else:
+                    model = st.session_state.model
+                
+                # 构造输入
+                if system_prompt:
+                    inputs = tokenizer.encode(system_prompt + "\n" + prompt, return_tensors="pt").to(model.device)
+                else:
+                    inputs = tokenizer.encode(prompt, return_tensors="pt").to(model.device)
+                
+                # 生成响应
+                with torch.no_grad():
+                    outputs = model.generate(inputs, max_new_tokens=200, temperature=0.1, repetition_penalty=1.2, do_sample=False)
+                
+                response = tokenizer.decode(outputs[0][inputs.shape[-1]:], skip_special_tokens=True)
+                return response
             
-            if document_content is None:
-                st.error("无法从PDF文件中提取内容")
-            else:
-                from langchain.text_splitter import RecursiveCharacterTextSplitter
-                text_splitter = RecursiveCharacterTextSplitter(
-                    chunk_size=1000,
-                    chunk_overlap=200,
-                    length_function=len,
+            # 定义嵌入函数 (使用本地模型)
+            # 初始化嵌入模型（使用all-MiniLM-L6-v2）
+            embed_model = AutoModel.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
+            
+            def embedding_func(texts):
+                from lightrag.llm.hf import hf_embed
+                return hf_embed(texts, tokenizer, embed_model)
+            
+            embedding_func_instance = EmbeddingFunc(
+                embedding_dim=384,  # all-MiniLM-L6-v2的维度
+                max_token_size=512,
+                func=embedding_func
+            )
+            
+            # 初始化 RAG-Anything 实例
+            rag = RAGAnything(
+                config=config,
+                llm_model_func=llm_model_func,
+                embedding_func=embedding_func_instance,
+            )
+            
+            # 处理文档
+            output_dir = "./output"
+            os.makedirs(output_dir, exist_ok=True)
+            
+            # 处理文档
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(
+                rag.process_document_complete(
+                    file_path=temp_file_path, 
+                    output_dir=output_dir, 
+                    parse_method="auto"
                 )
-                texts = text_splitter.split_text(document_content)
-                
-                try:
-                    from langchain_huggingface import HuggingFaceEmbeddings
-                    embeddings = HuggingFaceEmbeddings(model_name="/media/ps/4be23142-02e1-4581-90e2-3316bdb6f49c1/SemiIP-Summary/all-MiniLM-L6-v2")
-                except ImportError:
-                    from langchain_community.embeddings import HuggingFaceEmbeddings
-                    embeddings = HuggingFaceEmbeddings(model_name="/media/ps/4be23142-02e1-4581-90e2-3316bdb6f49c1/SemiIP-Summary/all-MiniLM-L6-v2")
-                except Exception as e:
-                    st.warning("无法加载HuggingFace embeddings，使用本地TF-IDF替代")
-                    from langchain_community.embeddings import FakeEmbeddings
-                    embeddings = FakeEmbeddings(size=1024)
-                
-                from langchain_community.vectorstores import FAISS
-                vector_store = FAISS.from_texts(texts, embeddings)
-                st.session_state.retriever = vector_store.as_retriever(search_kwargs={"k": 4})
-                st.session_state.processed_pdf = uploaded_file.name
-                
-                st.success(f"PDF文件 '{uploaded_file.name}' 处理完成!")
+            )
+            
+            st.session_state.rag_instance = rag
+            st.session_state.processed_pdf = uploaded_file.name
+            
+            st.success(f"PDF文件 '{uploaded_file.name}' 处理完成!")
                 
         except Exception as e:
             st.error(f"处理PDF文件时出错: {str(e)}")
-            logger.error(f"PDF processing error: {e}")
+            logger.error(f"PDF processing error: {e}", exc_info=True)
 
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
@@ -140,9 +195,8 @@ if prompt := st.chat_input("请输入您的问题"):
             try:
                 if not st.session_state.model_loaded:
                     with st.spinner("首次运行需要加载模型，请稍候..."):
-                        from langchain_community.llms import HuggingFacePipeline
+                        from transformers import AutoModelForCausalLM, AutoTokenizer
                         import torch
-                        from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
                         
                         tokenizer = AutoTokenizer.from_pretrained(model_path)
                         
@@ -153,54 +207,24 @@ if prompt := st.chat_input("请输入您的问题"):
                             torch_dtype=torch.float16
                         )
                         
-                        pipe = pipeline(
-                            "text-generation",
-                            model=model,
-                            tokenizer=tokenizer,
-                            max_new_tokens=200,
-                            temperature=0.1,
-                            repetition_penalty=1.2,
-                            do_sample=False
-                        )
-                        
-                        st.session_state.llm = HuggingFacePipeline(pipeline=pipe)
+                        st.session_state.model = model
+                        st.session_state.tokenizer = tokenizer
                         st.session_state.model_loaded = True
                 
-                if use_document_context and st.session_state.retriever is not None:
-                    from langchain.prompts import PromptTemplate
-                    prompt_template = """你是一个专业的技术专家，请仔细阅读以下专利文档内容，并回答用户的问题。
-
-重要：请遵循以下规则：
-1. 用自己的话来解释和回答，不要复制或直接引用文档中的句子
-2. 保持技术术语（如英文术语、数字、化学式等）的原样，不要翻译成中文
-3. 将技术内容转化为通俗易懂的中文表达，但保留必要的技术术语
-4. 如果文档中没有相关信息，请说明无法基于文档回答该问题
-5. 回答要简洁明了，避免使用过于复杂的术语
-
-文档内容：
-{context}
-
-用户问题：{question}
-
-请用中文回答，不要重复提示词内容："""
-                    
-                    prompt_obj = PromptTemplate(
-                        template=prompt_template,
-                        input_variables=["context", "question"]
+                if use_document_context and st.session_state.rag_instance is not None:
+                    # 使用 RAG-Anything 进行查询
+                    import asyncio
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    response = loop.run_until_complete(
+                        st.session_state.rag_instance.aquery(prompt, mode="hybrid")
                     )
-                    
-                    def format_docs(docs):
-                        return "\n\n".join(doc.page_content for doc in docs)
-                    
-                    retrieved_docs = st.session_state.retriever.get_relevant_documents(prompt)
-                    context = format_docs(retrieved_docs)
-                    
-                    full_prompt = prompt_template.format(context=context, question=prompt)
-                    
-                    response = st.session_state.llm.invoke(full_prompt)
                 else:
-                    general_prompt = f"请用中文回答以下问题:\n{prompt}"
-                    response = st.session_state.llm.invoke(general_prompt)
+                    # 通用对话
+                    inputs = st.session_state.tokenizer.encode(prompt, return_tensors="pt").to(st.session_state.model.device)
+                    with torch.no_grad():
+                        outputs = st.session_state.model.generate(inputs, max_new_tokens=200, temperature=0.1, repetition_penalty=1.2, do_sample=False)
+                    response = st.session_state.tokenizer.decode(outputs[0][inputs.shape[-1]:], skip_special_tokens=True)
                 
                 if len(response) > 500:
                     response = response[:500] + "..."
@@ -211,7 +235,7 @@ if prompt := st.chat_input("请输入您的问题"):
                 
             except Exception as e:
                 st.error(f"生成回答时出错: {str(e)}")
-                logger.error(f"Error generating response: {e}")
+                logger.error(f"Error generating response: {e}", exc_info=True)
                 
                 try:
                     st.info("尝试使用较小的模型...")
@@ -221,41 +245,8 @@ if prompt := st.chat_input("请输入您的问题"):
                                "根据上下文，该专利涉及半导体器件制造领域，特别是关于二维(2D)通道晶体管及其降低接触电阻的方法。文中提到了多种二维材料如过渡金属硫化物(TMDC)等，以及相应的制造和蚀刻工艺。"]
                     llm = FakeListLLM(responses=responses)
                     
-                    if use_document_context and st.session_state.retriever is not None:
-                        from langchain.prompts import PromptTemplate
-                        prompt_template = """你是一个专业的技术专家，请仔细阅读以下专利文档内容，并回答用户的问题。
-
-重要：请遵循以下规则：
-1. 用自己的话来解释和回答，不要复制或直接引用文档中的句子
-2. 保持技术术语（如英文术语、数字、化学式等）的原样，不要翻译成中文
-3. 将技术内容转化为通俗易懂的中文表达，但保留必要的技术术语
-4. 如果文档中没有相关信息，请说明无法基于文档回答该问题
-5. 回答要简洁明了，避免使用过于复杂的术语
-
-文档内容：
-{context}
-
-用户问题：{question}
-
-请用中文回答，不要重复提示词内容："""
-                        
-                        prompt_obj = PromptTemplate(
-                            template=prompt_template,
-                            input_variables=["context", "question"]
-                        )
-                        
-                        def format_docs(docs):
-                            return "\n\n".join(doc.page_content for doc in docs)
-                        
-                        retrieved_docs = st.session_state.retriever.get_relevant_documents(prompt)
-                        context = format_docs(retrieved_docs)
-                        
-                        full_prompt = prompt_template.format(context=context, question=prompt)
-                        
-                        response = llm.invoke(full_prompt)
-                    else:
-                        general_prompt = f"请用中文回答以下问题:\n{prompt}"
-                        response = llm.invoke(general_prompt)
+                    general_prompt = f"请用中文回答以下问题:\n{prompt}"
+                    response = llm.invoke(general_prompt)
                     
                     if len(response) > 500:
                         response = response[:500] + "..."
@@ -271,7 +262,7 @@ else:
 if st.sidebar.button("清空聊天历史"):
     st.session_state.messages = []
     st.session_state.processed_pdf = None
-    st.session_state.retriever = None
+    st.session_state.rag_instance = None
     st.session_state.model_loaded = False
     st.session_state.llm = None
     st.session_state.data_cleared = True
